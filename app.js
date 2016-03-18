@@ -1,10 +1,14 @@
 // import modules
-var express = require('express');
-var app = express();
-var path = require('path');
-var mongoose = require('mongoose');
-var bodyParser = require('body-parser');
-var methodOverride = require('method-override');
+var express         = require('express');
+var app             = express();
+var path            = require('path');
+var mongoose        = require('mongoose');
+var passport        = require('passport');
+var session         = require('express-session');
+var flash           = require('connect-flash');
+var async           = require('async');
+var bodyParser      = require('body-parser');
+var methodOverride  = require('method-override');
 
 // connect database
 mongoose.connect(process.env.MONGO_DB);
@@ -24,6 +28,14 @@ var postSchema = mongoose.Schema({
   updateAt: Date
 });
 var Post = mongoose.model('post', postSchema);
+
+var userSchma = mongoose.Schema({
+  email : {type:String, required:true, unique:true},
+  ninckname : {type:String, required:true, unique:true},
+  password : {type:String, required:true, unique:true},
+  createdAt : {type:Date, default:Date.now}
+});
+var User = mongoose.model('user', userSchma);
 /*
 var dataSchema = mongoose.Schema({
   name:String,
@@ -49,8 +61,48 @@ app.use(express.static(path.join(__dirname, 'publuc')));
 app.use(bodyParser.json()); // 다른프로그램이 JSON으로 데이터 전송할 경우
 app.use(bodyParser.urlencoded({extended:true})); // 웹사이트가 JSON으로 데이터를 전송할 경우
 app.use(methodOverride("_method"));
+app.use(flash());
+
+app.use(session({secret:'MySecret'})); // 비밀번호 Hash키 값
+app.use(passport.initialized());
+app.use(passport.session());
+
+passport.serializeUser(function(user, done) {
+  done(null, user.id);
+});
+passport.deserializeUser(function(id, done) {
+  User.findById(id, function(err, user) {
+    done(err, user);
+  });
+});
+
+var LocalStrategy = require('passport-local').Strategy;
+passport.use('local-login',
+  new LocalStrategy({
+      usernameField : 'email',
+      passwordField : 'password',
+      passReqToCallback : true
+    },
+    function(req, email, password, done) {
+      User.findOne({'email' : email }, function(err, user) {
+          if(err) return done(err);
+          if(!user) {
+            req.flash("email", req.body.email);
+            return done(null, false, req.flash('loginError', 'No user found.'));
+
+          }
+          if(user.password != password) {
+            req.flash("email", req.body.email);
+            return done(null, false, req.flash('loginError', 'Password does not Match.'));
+          }
+          return done(null, user);
+      });
+    }
+  )
+);
 
 // set routes
+/*
 app.get('/posts', function(req, res) {
   Post.find({}).sort('-createdAt').exec(function (err,posts) {
     if(err) return res.json({success:false, message:err});
@@ -91,7 +143,18 @@ app.delete('/posts/:id', function(req, res) {
     res.redirect('/posts');
   });
 }); //destroy
-
+*/
+app.get('/', function(req, res) {
+  res.redirect('/posts');
+});
+app.get('/login', function(req, res) {
+  res.render('login/login', {email:req.flash("email")[0], loginError:req.flash('loginError')});
+});
+app.post('/login',
+  function (reqm res, next) {
+    req.flash("email");
+    
+  })
 // start server
 app.listen(3000, function() {
   console.log('Server On!');
