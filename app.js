@@ -27,15 +27,30 @@ var postSchema = mongoose.Schema({
   createdAt: {type:Date, default:Date.now},
   updateAt: Date
 });
+// 모델을 담는 변수는 첫긇자가 대문자이어야함
 var Post = mongoose.model('post', postSchema);
-
-var userSchma = mongoose.Schema({
+var bcrypt = require("bcrypt-nodejs"); // 비밀번호를 암호화
+var userSchema = mongoose.Schema({
   email : {type:String, required:true, unique:true},
-  ninckname : {type:String, required:true, unique:true},
+  nickname : {type:String, required:true, unique:true},
   password : {type:String, required:true, unique:true},
   createdAt : {type:Date, default:Date.now}
 });
-var User = mongoose.model('user', userSchma);
+userSchema.pre("save", function(next) { // User모델이 "save"되기 전
+  var user = this;
+  if(!user.isModified("password")) {
+    return next();
+  } else {
+    user.password = bcrypt.hashSync(user.password);
+    return next();
+  }
+});
+userSchema.methods.authenticate = function (password) {
+  var user = this;
+  return bcrypt.compareSync(password, user.password);
+};
+
+var User = mongoose.model('user', userSchema);
 /*
 var dataSchema = mongoose.Schema({
   name:String,
@@ -57,25 +72,28 @@ Data.findOne({name:"myData"}, function(err, data) {
 app.set("view engine", 'ejs');
 
 // set middlewares
-app.use(express.static(path.join(__dirname, 'publuc')));
+app.use(express.static(path.join(__dirname, 'public'))); // 정적셋팅
 app.use(bodyParser.json()); // 다른프로그램이 JSON으로 데이터 전송할 경우
 app.use(bodyParser.urlencoded({extended:true})); // 웹사이트가 JSON으로 데이터를 전송할 경우
 app.use(methodOverride("_method"));
 app.use(flash());
 
 app.use(session({secret:'MySecret'})); // 비밀번호 Hash키 값
-app.use(passport.initialized());
+app.use(passport.initialize());
 app.use(passport.session());
 
+// session생성 시에 어떠한 정보를 저장할지 결정
 passport.serializeUser(function(user, done) {
   done(null, user.id);
 });
+// session으로 부터 개체를 가져올때 어떻게 가져올지 결정
 passport.deserializeUser(function(id, done) {
   User.findById(id, function(err, user) {
     done(err, user);
   });
 });
 
+// 로그인 인증방식
 var LocalStrategy = require('passport-local').Strategy;
 passport.use('local-login',
   new LocalStrategy({
@@ -91,7 +109,7 @@ passport.use('local-login',
             return done(null, false, req.flash('loginError', 'No user found.'));
 
           }
-          if(user.password != password) {
+          if(!user.authenticate(password)) {
             req.flash("email", req.body.email);
             return done(null, false, req.flash('loginError', 'Password does not Match.'));
           }
@@ -151,14 +169,140 @@ app.get('/login', function(req, res) {
   res.render('login/login', {email:req.flash("email")[0], loginError:req.flash('loginError')});
 });
 app.post('/login',
-  function (reqm res, next) {
+  function (req, res, next) {
     req.flash("email");
-    
+    if(req.body.email.length === 0 || req.body.password.length === 0) {
+      req.flash("email", req.body.email);
+      req.flash("loginError", "Please enther both email and password.");
+      req.redirect('/login');
+    } else {
+      next();
+    }
+  }, passport.authenticate('local-login', {
+    successRedirect : '/posts',
+    failureRedirect : '/login',
+    failureFlash : true
   })
+);
+app.get('/logout', function(req, res) {
+  req.logout();
+  res.redirect('/');
+});
+// set user routes
+app.get('/users/new', function(req, res) {
+  res.render('users/new', {
+    formData : req.flash('formData')[0],
+    emailError : req.flash('emailError')[0],
+    nicknameError : req.flash('nicknameError')[0],
+    passwordError : req.flash('passwordError')[0]
+  });
+}); // new
+app.post('/users', checkUserRegValidation, function(req, res, next) {
+  User.create(req.body.user, function(err, user) {
+    if(err) return res.json({success:false, message:err});
+    res.redirect('/login');
+  });
+}); // create
+app.get('/users/:id', isLoggedIn, function(req, res) {
+  User.findById(req.params.id, function(err, user) {
+    if(err) return res.json({success:false, message:err});
+    res.render('users/show', {user: user});
+  });
+}); // show
+app.get('/users/:id/edit', isLoggedIn, function(req, res) {
+  if(req.user._id != req.params.id) return res.json({success:false, message:"Unauthrized Attempt"});
+  User.findById(req.params.id, function(err, user) {
+    if(err) return res.json({success:false, message:err});
+    res.render("users/edit", {
+      user:user,
+      formData : req.flash('formData')[0],
+      emailError : req.flash('emailError')[0],
+      nicknameError : req.flash('nicknameError')[0],
+      passwordError : req.flash('passwordError')[0]
+    });
+  });
+}); // edit
+app.put('/users/:id', isLoggedIn, checkUserRegValidation, function(req, res) {
+  if(req.user._id != req.params.id) return res.json({success:false, message:"Unauthrized Attempt"});
+  User.findById(req.params.id, req.body.user, function(err, user) {
+    if(err) return res.json({success:"false", message:err});
+    if(user.authenticate(req.body.user.password)) {
+      if(req.body.user.newPassword) {
+        user.password = req.body.user.newPassword;
+        user.save();
+      } else {
+        delete req.body.user.password;
+      }
+      User.findByIdAndUpdate(req.params.id, req.body.user, function(err, user) {
+        if(err) return res.json({success:"false", message:err});
+        res.redirect('/users/'+req.params.id);
+      });
+    } else {
+      req.flash("formData", req.body.user);
+      req.flash("passwordError", "- Invalid password");
+      res.redirect('/users/'+req.params.id +"/edit");
+    }
+  });
+}); // update
+app.get('/posts', function(req, res) {
+  Post.find({}).sort('-createdAt').exec(function (err, posts) {
+    if(err) return res.json({success:false, message:err});
+    res.render("posts/index", {data:posts, user:req.user});
+  });
+}); // index
+
 // start server
 app.listen(3000, function() {
   console.log('Server On!');
 });
+
+// functions
+// 현재 로그인이 되어 있는 상태를 판단
+function isLoggedIn(req, res, next) {
+  if(req.isAuthenticated()) {
+    return next();
+  }
+  res.redirect('/');
+}
+// 유저를 새로 등록하거나 유저 정보를 변경하기 전에 DB에 email이 이미 등록되어 있는지,
+// nickname이 이미 등록되어있는지를 찾아보고 결과가 있으면 에러 메시지 출력
+function checkUserRegValidation(req, res, next) {
+    var isVaild = true;
+    // 비동기함수를 동기함수처럼 사용
+    async.waterfall (
+      [function(callback) {
+        User.findOne({email: req.body.user.email, _id: {$ne: mongoose.Types.ObjectId(req.params.id)}},
+          function(err, user) {
+            if(user) {
+              isVaild = false;
+              req.flash("emailError", "- This email is already resistered.");
+            }
+            callback(null, isVaild);
+          }
+      );
+    }, function(isVaild, callback) {
+      User.findOne({nickname : req.body.user.nickname, _id: {$ne: mongoose.Types.ObjectId(req.params.id)}},
+        function(err, user) {
+          if(user) {
+            isVaild = false;
+            req.flash("nicknameError", "- This nickname is already resistered. ");
+          }
+          callback(null, isVaild);
+        }
+      );
+    }], function(err, isVaild) {
+      if(err) return res.json({success:"false", message:err});
+      if(isVaild) {
+        return next();
+      } else {
+        req.flash("formData", req.body.user);
+        res.redirect("back");
+      }
+    }
+  );
+}
+
+
 
 /*
 app.get('/', function (req, res) {
